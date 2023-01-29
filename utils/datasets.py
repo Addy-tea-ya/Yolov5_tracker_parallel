@@ -30,6 +30,61 @@ from utils.augmentations import Albumentations, augment_hsv, copy_paste, letterb
 from utils.general import check_dataset, check_requirements, check_yaml, clean_str, segments2boxes, \
     xywh2xyxy, xywhn2xyxy, xyxy2xywhn, xyn2xy
 from utils.torch_utils import torch_distributed_zero_first
+#from realsense_depth import *
+import pyrealsense2 as rs
+import numpy as np
+
+class DepthCamera:
+    def __init__(self):
+        # Configure depth and color streams
+        self.pipeline = rs.pipeline()
+        config = rs.config()
+
+        # Get device product line for setting a supporting resolution
+        pipeline_wrapper = rs.pipeline_wrapper(self.pipeline)
+        pipeline_profile = config.resolve(pipeline_wrapper)
+        device = pipeline_profile.get_device()
+        device_product_line = str(device.get_info(rs.camera_info.product_line))
+
+        config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+        config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+
+
+
+        # Start streaming
+        self.align_to = rs.stream.color
+        self.align = rs.align(self.align_to)
+        self.pipeline.start(config)
+
+    def get_frame(self):
+        frames = self.pipeline.wait_for_frames()
+
+
+        # Align the depth frame to color frame
+        aligned_frames = self.align.process(frames)
+
+        # Get aligned frames
+        aligned_depth_frame = aligned_frames.get_depth_frame() # aligned_depth_frame is a 640x480 depth image
+        color_frame = aligned_frames.get_color_frame()
+
+        # Validate that both frames are valid
+
+        depth_image = np.asanyarray(aligned_depth_frame.get_data())
+        color_image = np.asanyarray(color_frame.get_data())
+        '''
+        depth_frame = frames.get_depth_frame()
+        color_frame = frames.get_color_frame()
+
+        depth_image = np.asanyarray(depth_frame.get_data())
+        color_image = np.asanyarray(color_frame.get_data())
+        
+        if not depth_image or not color_image:
+            return False, None, None
+        '''
+        return True, depth_image, color_image
+
+    def release(self):
+        self.pipeline.stop()
 
 # Parameters
 HELP_URL = 'https://github.com/ultralytics/yolov5/wiki/Train-Custom-Data'
@@ -285,7 +340,7 @@ class LoadStreams:
         self.mode = 'stream'
         self.img_size = img_size
         self.stride = stride
-
+        self.dc = DepthCamera()
         if os.path.isfile(sources):
             with open(sources, 'r') as f:
                 sources = [x.strip() for x in f.read().strip().splitlines() if len(x.strip())]
@@ -349,9 +404,26 @@ class LoadStreams:
         if not all(x.is_alive() for x in self.threads) or cv2.waitKey(1) == ord('q'):  # q to quit
             cv2.destroyAllWindows()
             raise StopIteration
-
+        
         # Letterbox
-        img0 = self.imgs.copy()
+        
+        _, depth_frame, img0 = self.dc.get_frame()
+        #img0 = (self.imgs.copy())[0]
+        #print("IMG SHAPE",img0.shape)
+        img = letterbox(img0, self.img_size, stride=self.stride, auto=self.rect and self.auto)[0] 
+
+        # Stack
+        #img = np.stack(img, 0)
+        '''
+        # Convert
+        img = img.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
+        img = np.ascontiguousarray(img)
+        #cv2.imshow('IMG',img0)
+        #print("IMG SHAPE",img0.shape)
+        return self.sources, img, [img0], None
+        '''
+        
+        img0 = [img0]
         img = [letterbox(x, self.img_size, stride=self.stride, auto=self.rect and self.auto)[0] for x in img0]
 
         # Stack
@@ -361,8 +433,8 @@ class LoadStreams:
         img = img[..., ::-1].transpose((0, 3, 1, 2))  # BGR to RGB, BHWC to BCHW
         img = np.ascontiguousarray(img)
 
-        return self.sources, img, img0, None
-
+        return self.sources, img, img0, None, depth_frame
+        
     def __len__(self):
         return len(self.sources)  # 1E12 frames = 32 streams at 30 FPS for 30 years
 

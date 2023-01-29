@@ -5,12 +5,12 @@ Run inference on images, videos, directories, streams, etc.
 Usage:
     $ python path/to/detect.py --source path/to/img.jpg --weights yolov5s.pt --img 640
 """
-
+from cvzone.SerialModule import SerialObject
 import argparse
 import os
 import sys
 from pathlib import Path
-
+import math 
 import cv2
 import numpy as np
 import torch
@@ -29,7 +29,21 @@ from utils.general import apply_classifier, check_img_size, check_imshow, check_
     strip_optimizer, xyxy2xywh
 from utils.plots import Annotator, colors
 from utils.torch_utils import load_classifier, select_device, time_sync
+import serial
+import time
 
+#arduino = serial.Serial(port='COM5', baudrate=115200, timeout=.1)
+def write_read(x):
+    print(x)
+    #time.sleep(0.3)
+    arduino.write(bytes(x, 'utf-8'))
+    arduino.flush()
+    
+    data = arduino.readline()
+    print("\n\nDATA ",data)
+    #return data
+
+#arduino = SerialObject("COM7")
 
 @torch.no_grad()
 def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
@@ -132,7 +146,7 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
     if pt and device.type != 'cpu':
         model(torch.zeros(1, 3, *imgsz).to(device).type_as(next(model.parameters())))  # run once
     dt, seen = [0.0, 0.0, 0.0], 0
-    for path, img, im0s, vid_cap in dataset:
+    for path, img, im0s, vid_cap,depth in dataset:
         t1 = time_sync()
         if onnx:
             img = img.astype('float32')
@@ -144,7 +158,8 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
             img = img[None]  # expand for batch dim
         t2 = time_sync()
         dt[0] += t2 - t1
-
+        #cv2.imshow("img", im0s[0])
+        #print("SHAPE",(im0s[0]).shape)
         # Inference
         if pt:
             visualize = increment_path(save_dir / Path(path).stem, mkdir=True) if visualize else False
@@ -190,11 +205,13 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
         # Process predictions
         for i, det in enumerate(pred):  # per image
             seen += 1
+            #cv2.imshow("img2", im0)
             if webcam:  # batch_size >= 1
                 p, s, im0, frame = path[i], f'{i}: ', im0s[i].copy(), dataset.count
+                #print(dataset.count)
             else:
                 p, s, im0, frame = path, '', im0s.copy(), getattr(dataset, 'frame', 0)
-
+            cv2.imshow("img", im0)
             p = Path(p)  # to Path
             save_path = str(save_dir / p.name)  # img.jpg
             txt_path = str(save_dir / 'labels' / p.stem) + ('' if dataset.mode == 'image' else f'_{frame}')  # img.txt
@@ -202,6 +219,7 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
             gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
             imc = im0.copy() if save_crop else im0  # for save_crop
             annotator = Annotator(im0, line_width=line_thickness, example=str(names))
+            doneFlag=False
             if len(det):
                 # Rescale boxes from img_size to im0 size
                 det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
@@ -212,28 +230,73 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
                     s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "  # add to string
 
                 # Write results
+                
                 for *xyxy, conf, cls in reversed(det):
+                    depth=cv2.resize(depth,(640,480))
+                    #print("CORDINATES ",int(xyxy[0].item()),int(xyxy[1].item()),int(xyxy[2].item()),int(xyxy[3].item()),"depth",depth[int(xyxy[1].item())+int((int(xyxy[3].item() - xyxy[1].item()))/2),int(xyxy[0].item())+int((int(xyxy[2].item() - xyxy[0].item()))/2)])
+                    
+                    depth=cv2.rectangle(depth, (int(xyxy[0].item()),int(xyxy[1].item())), (int(xyxy[2].item()),int(xyxy[3].item())), (255,255,255), 2)
+                    #+int((int(xyxy[2].item() - xyxy[0].item()))/2)
+                    im0=cv2.rectangle(im0, (int(xyxy[0].item()),int(xyxy[1].item())), (int(xyxy[2].item()),int(xyxy[3].item())), (0,255,0), 2)
+                    #print(depth.shape)
+                    #print(im0.shape)
+                    #print("W",(int(xyxy[2].item() - xyxy[0].item())))
+                    w=(int(xyxy[2].item() - xyxy[0].item()))
+                    
+                    #depo=depth[int(xyxy[1].item())+int((int(xyxy[3].item() - xyxy[1].item()))/2),int(xyxy[0].item())+int((int(xyxy[2].item() - xyxy[0].item()))/2)]
+                    angle=int((69*(abs(int(xyxy[0].item())+(w/2)-320)))/640)
+                    #print("ANGLE",angle)
+                    if(len(str(angle))==1):
+                        angle="0"+str(angle)
+                    else:
+                        angle=str(angle)
+                    '''
+                    if(xyxy[0].item()<320):
+                        #print("\nTAN",int(abs(xyxy[0].item()-320))/int(depo))
+                        write_read("+"+angle)
+                        doneFlag=True
+                        #print("aditya")
+                        #arduino.sendData([angle])
+                        #print("ANGLE",angle)
+                    elif(xyxy[0].item()>320):
+                        write_read("-"+angle)
+                        doneFlag=True
+                        #arduino.sendData([angle])
+                        #print("ANGLE",angle)
+
+                    else:
+                        doneFlag=True
+                        write_read("000")
+                        #arduino.sendData([10])
+                    '''
                     if save_txt:  # Write to file
                         xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
-                        line = (cls, *xywh, conf) if save_conf else (cls, *xywh)  # label format
+                        line = (cls, *xywh, conf) if save_conf else (cls, *xywh)
+                        
                         with open(txt_path + '.txt', 'a') as f:
                             f.write(('%g ' * len(line)).rstrip() % line + '\n')
-
-                    if save_img or save_crop or view_img:  # Add bbox to image
+                    
+                    '''if save_img or save_crop or view_img:  # Add bbox to image
                         c = int(cls)  # integer class
                         label = None if hide_labels else (names[c] if hide_conf else f'{names[c]} {conf:.2f}')
                         annotator.box_label(xyxy, label, color=colors(c, True))
                         if save_crop:
-                            save_one_box(xyxy, imc, file=save_dir / 'crops' / names[c] / f'{p.stem}.jpg', BGR=True)
+                            save_one_box(xyxy, imc, file=save_dir / 'crops' / names[c] / f'{p.stem}.jpg', BGR=True)'''
 
             # Print time (inference-only)
-            print(f'{s}Done. ({t3 - t2:.3f}s)')
+            #print(f'{s}Done. ({t3 - t2:.3f}s)')
 
             # Stream results
+            #cv2.imshow("img1", im0)
+            '''
+            if(doneFlag==False):
+                write_read("111")
+            '''
             im0 = annotator.result()
-            if view_img:
-                cv2.imshow(str(p), im0)
-                cv2.waitKey(1)  # 1 millisecond
+            #if view_img:
+            cv2.imshow("img", im0)
+            cv2.imshow("depth",depth)
+            cv2.waitKey(1)  # 1 millisecond
 
             # Save results (image with detections)
             if save_img:
@@ -256,7 +319,7 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
 
     # Print results
     t = tuple(x / seen * 1E3 for x in dt)  # speeds per image
-    print(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {(1, 3, *imgsz)}' % t)
+    #print(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {(1, 3, *imgsz)}' % t)
     if save_txt or save_img:
         s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
         print(f"Results saved to {colorstr('bold', save_dir)}{s}")
@@ -266,13 +329,13 @@ def run(weights=ROOT / 'yolov5s.pt',  # model.pt path(s)
 
 def parse_opt():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--weights', nargs='+', type=str, default=ROOT / 'yolov5s.pt', help='model path(s)')
-    parser.add_argument('--source', type=str, default=ROOT / 'data/images', help='file/dir/URL/glob, 0 for webcam')
+    parser.add_argument('--weights', nargs='+', type=str, default=ROOT / 'C:/Users/Aditya/Downloads/best_outside83.pt', help='model path(s)')
+    parser.add_argument('--source', type=str, default=ROOT / '1', help='file/dir/URL/glob, 0 for webcam')
     parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640], help='inference size h,w')
     parser.add_argument('--conf-thres', type=float, default=0.25, help='confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.45, help='NMS IoU threshold')
     parser.add_argument('--max-det', type=int, default=1000, help='maximum detections per image')
-    parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
+    parser.add_argument('--device', default='0', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--view-img', action='store_true', help='show results')
     parser.add_argument('--save-txt', action='store_true', help='save results to *.txt')
     parser.add_argument('--save-conf', action='store_true', help='save confidences in --save-txt labels')
